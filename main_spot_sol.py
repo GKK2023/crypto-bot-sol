@@ -1,6 +1,7 @@
 """
 CryptoBot - Spot Trading Bot
 Version Gate.io SOL/USDT: 15min, RSI 30, allocation 20%, profit 0.5% NET, take-profit 2%
+Avec gestion automatique du dust
 """
 
 import os
@@ -33,7 +34,7 @@ MAX_USDT_PERCENT = 20
 # Seuil de profit minimum NET (0.5% après tous les frais)
 MIN_PROFIT_THRESHOLD = 0.5
 
-# Take-Profit automatique (2% - SOL est plus volatile)
+# Take-Profit automatique (2% - SOL est volatile)
 TAKE_PROFIT_THRESHOLD = 2.0
 
 # Seuil RSI pour achat
@@ -41,6 +42,9 @@ RSI_BUY_THRESHOLD = 30
 
 # RSI pour vente technique
 RSI_SELL_THRESHOLD = 70
+
+# Seuil minimum pour une vraie position (0.01 SOL)
+MIN_POSITION_THRESHOLD = 0.01
 
 class SimpleBot:
     def __init__(self):
@@ -74,10 +78,13 @@ class SimpleBot:
             self.balance = self.get_real_balance()
             
             sol_balance = float(self.balance.get('SOL', 0))
-            if sol_balance > 0:
+            
+            # Si dust, on l'ignore et on repart à zéro
+            if sol_balance >= MIN_POSITION_THRESHOLD:
                 self.position = {'side': 'long', 'entry': 0, 'amount': sol_balance}
                 print(f"Position existante détectée: {sol_balance} SOL")
             else:
+                print(f"Dust ignoré: {sol_balance} SOL - Pas de position")
                 self.position = None
     
     def get_real_balance(self):
@@ -183,9 +190,6 @@ class SimpleBot:
     def calculate_profitability(self, current_price):
         """
         Calcule si la position est profitable NET (après tous les frais).
-        
-        Break-even price = entry_price * (1 + TOTAL_FEES)
-        Prix pour profit de 0.5% = entry_price * (1 + TOTAL_FEES) * (1 + MIN_PROFIT_THRESHOLD/100)
         """
         try:
             if not self.position:
@@ -212,7 +216,7 @@ class SimpleBot:
             # Est-ce rentable ?
             is_profitable = current_price > target_price
             
-            # Pour take-profit: prix pour 2% de profit NET (SOL plus volatile)
+            # Pour take-profit: prix pour 2% de profit NET
             take_profit_price = break_even_price * (1 + TAKE_PROFIT_THRESHOLD / 100)
             is_take_profit = current_price >= take_profit_price
             
@@ -252,21 +256,10 @@ class SimpleBot:
             if current_price is None:
                 return False
             
-            # Vérifier le solde réel SOL
-            sol_balance = float(self.balance.get('SOL', 0))
-            if sol_balance < 0.01:  # Minimum 0.01 SOL
-                return False
-            
-            # Mettre à jour le position amount avec le solde réel
-            if self.position:
-                self.position['amount'] = sol_balance
-            
             # Calculer la rentabilité
             is_profitable, profit_pct, details = self.calculate_profitability(current_price)
             
-            # LOGIQUE CORRIGÉE:
-            
-            # 1. TAKE-PROFIT: Vente automatique si profit >= 2% (SOL volatile)
+            # 1. TAKE-PROFIT: Vente automatique si profit >= 2%
             if profit_pct >= TAKE_PROFIT_THRESHOLD and profit_pct > 0:
                 print(f"  -> TAKE-PROFIT! Vente automatique à {profit_pct:.2f}% (+{details.get('profit_usdt', 0):.2f}$)")
                 return True
@@ -333,7 +326,7 @@ class SimpleBot:
                 self.balance = self.get_real_balance()
             
             sol_balance = float(self.balance.get('SOL', 0))
-            if sol_balance >= 0.01:
+            if sol_balance >= MIN_POSITION_THRESHOLD:
                 price = self.get_price()
                 if price is None:
                     return
@@ -369,7 +362,8 @@ class SimpleBot:
         print(f"Seuil de profit NET: {MIN_PROFIT_THRESHOLD}% (après {TOTAL_FEES*100}% frais)")
         print(f"Take-Profit: {TAKE_PROFIT_THRESHOLD}%")
         print(f"Réserve: {MIN_USDT_RESERVE}$")
-        print(f"=========================================\n")
+        print(f"Seuil position minimum: {MIN_POSITION_THRESHOLD} SOL (dust ignoré si <)")
+        print(f"========================================\n")
         
         while True:
             try:
@@ -383,14 +377,28 @@ class SimpleBot:
                         print(f"\n{datetime.now().strftime('%H:%M:%S')} | Prix: ${price:,.2f}")
                         print(f"  Solde USDT: {float(self.balance.get('USDT', 0)):.2f} | SOL: {float(self.balance.get('SOL', 0)):.4f}")
                         
+                        sol_balance = float(self.balance.get('SOL', 0))
+                        
                         if self.position is None:
+                            # Pas de position - vérifier si signal d'achat
                             if self.should_buy(data):
                                 print("  -> Signal ACHAT détecté!")
                                 self.buy()
                         else:
-                            if self.should_sell(data):
-                                print("  -> Signal VENTE détecté!")
-                                self.sell()
+                            # Vérifier si la position est encore valide
+                            if sol_balance < MIN_POSITION_THRESHOLD:
+                                # Position devenue dust - ignorer et repartir à zéro
+                                print(f"  -> Dust ignoré: {sol_balance:.6f} SOL - Position réinitialisée")
+                                self.position = None
+                                # Essayer d'acheter après avoir ignoré le dust
+                                if self.should_buy(data):
+                                    print("  -> Signal ACHAT détecté (après dust)!")
+                                    self.buy()
+                            else:
+                                # Position valide - vérifier vente
+                                if self.should_sell(data):
+                                    print("  -> Signal VENTE détecté!")
+                                    self.sell()
                         
                         rsi = self.calculate_rsi(data)
                         macd, signal = self.calculate_macd(data)
