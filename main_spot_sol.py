@@ -1,6 +1,6 @@
 """
 CryptoBot - Spot Trading Bot SOL/USDT
-Version simplifiée - sans serveur web
+Version avec serveur web minimal
 """
 
 import os
@@ -9,6 +9,7 @@ import ccxt
 import time
 import pandas as pd
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configuration
 SYMBOL = 'SOL/USDT'
@@ -44,8 +45,22 @@ RSI_SELL_THRESHOLD = 70
 # Seuil minimum pour une vraie position
 MIN_POSITION_THRESHOLD = 0.01
 
+# Classe pour servir une page simple
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        response = "<html><body><h1>Bot SOL/USDT Active</h1></body></html>"
+        self.wfile.write(response.encode())
+    
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+
 print("=" * 60)
-print("BOT SOL/USDT - VERSION SIMPLIFIÉE")
+print("BOT SOL/USDT - VERSION AVEC SERVEUR WEB")
 print("=" * 60)
 print(f"[DEBUG] API_KEY définie: {bool(API_KEY)}")
 print(f"[DEBUG] API_SECRET définie: {bool(API_SECRET)}")
@@ -95,7 +110,6 @@ class SimpleBot:
 
     def get_real_balance(self):
         try:
-            print("[DEBUG] fetch_balance appelé")
             balance = self.exchange.fetch_balance()
             usdt_balance = 0
             sol_balance = 0
@@ -104,7 +118,6 @@ class SimpleBot:
                 if isinstance(total, dict):
                     usdt_balance = float(total.get('USDT', 0) or 0)
                     sol_balance = float(total.get('SOL', 0) or 0)
-            print(f"[DEBUG] Balance - USDT: {usdt_balance}, SOL: {sol_balance}")
             return {'USDT': usdt_balance, 'SOL': sol_balance}
         except Exception as e:
             print(f"Erreur solde: {e}")
@@ -350,7 +363,17 @@ class SimpleBot:
                 print(f"Erreur: {e}")
                 time.sleep(60)
 
+def run_web_server():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"Serveur web démarré sur le port {port}")
+    server.serve_forever()
+
 if __name__ == '__main__':
+    import threading
+    print("[DEBUG] Démarrage du serveur web en arrière-plan")
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
     print("[DEBUG] Création du bot")
     bot = SimpleBot()
     print("[DEBUG] Lancement de la boucle principale")
