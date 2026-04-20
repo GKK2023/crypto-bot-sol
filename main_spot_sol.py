@@ -1,6 +1,6 @@
 """
 CryptoBot - Spot Trading Bot SOL/USDT
-Version diagnostic - avec logs explicites
+Version simplifiée - sans serveur web
 """
 
 import os
@@ -9,8 +9,6 @@ import ccxt
 import time
 import pandas as pd
 from datetime import datetime
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-import threading
 
 # Configuration
 SYMBOL = 'SOL/USDT'
@@ -47,7 +45,7 @@ RSI_SELL_THRESHOLD = 70
 MIN_POSITION_THRESHOLD = 0.01
 
 print("=" * 60)
-print("BOT SOL/USDT - VERSION DIAGNOSTIC")
+print("BOT SOL/USDT - VERSION SIMPLIFIÉE")
 print("=" * 60)
 print(f"[DEBUG] API_KEY définie: {bool(API_KEY)}")
 print(f"[DEBUG] API_SECRET définie: {bool(API_SECRET)}")
@@ -66,8 +64,6 @@ class SimpleBot:
             print("[DEBUG] Mode TRADING RÉEL - vérification des clés")
             if not API_KEY or not API_SECRET:
                 print("ERREUR: Les variables d'environnement ne sont pas définies!")
-                print(f"  GATEIO_API_KEY: {'OK' if API_KEY else 'MANQUANTE'}")
-                print(f"  GATEIO_API_SECRET: {'OK' if API_SECRET else 'MANQUANTE'}")
                 sys.exit(1)
             
             print("[DEBUG] Clés API OK - création de l'échange")
@@ -76,7 +72,6 @@ class SimpleBot:
                     'apiKey': API_KEY,
                     'secret': API_SECRET,
                     'enableRateLimit': True,
-                    'options': {'createMarketBuyOrderRequiresPrice': False},
                 })
                 print("[DEBUG] Exchange créé - test de connexion")
                 self.exchange.fetch_time()
@@ -201,7 +196,6 @@ class SimpleBot:
             profit_usdt = (current_price - entry_price) * amount_sol
             is_profitable = current_price > target_price
             take_profit_price = break_even_price * (1 + TAKE_PROFIT_THRESHOLD / 100)
-            is_take_profit = current_price >= take_profit_price
             return is_profitable, float(profit_pct), {
                 'entry_price': entry_price,
                 'current_price': current_price,
@@ -356,16 +350,7 @@ class SimpleBot:
                 print(f"Erreur: {e}")
                 time.sleep(60)
 
-def run_web_server():
-    port = int(os.environ.get('PORT', 10000))
-    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-    print(f"Web server running on port {port}")
-    server.serve_forever()
-
 if __name__ == '__main__':
-    print("[DEBUG] Démarrage du thread web server")
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
     print("[DEBUG] Création du bot")
     bot = SimpleBot()
     print("[DEBUG] Lancement de la boucle principale")
