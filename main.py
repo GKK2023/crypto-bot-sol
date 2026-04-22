@@ -72,22 +72,12 @@ class SimpleBot:
         print("[DEBUG] __init__ appelé")
         if PAPER_MODE:
             print("Mode : PAPER TRADING")
-            self.exchange = ccxt.gateio({'enableRateLimit': True})
-            self.balance = {'USDT': 10000, 'SOL': 0}
-            self.position = None
-        else:
-            print("[DEBUG] Mode TRADING RÉEL - vérification des clés")
-            if not API_KEY or not API_SECRET:
-                print("ERREUR: Les variables d'environnement ne sont pas définies!")
-                sys.exit(1)
-            
-            print("[DEBUG] Clés API OK - création de l'échange")
-            try:
-                self.exchange = ccxt.gateio({
-                    'apiKey': API_KEY,
-                    'secret': API_SECRET,
-                    'enableRateLimit': True,
-                })
+            self.exchange = ccxt.gateio({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'enableRateLimit': True,
+    'options': {'createMarketBuyOrderRequiresPrice': False},
+})
                 print("[DEBUG] Exchange créé - test de connexion")
                 self.exchange.fetch_time()
                 print("Connexion à Gate.io réussie!")
