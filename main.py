@@ -1,6 +1,6 @@
 """
 CryptoBot - Spot Trading Bot SOL/USDT
-Version avec serveur web minimal
+Version avec serveur web minimal - CORRIGÉE
 """
 
 import os
@@ -60,43 +60,54 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 print("=" * 60)
-print("BOT SOL/USDT - VERSION AVEC SERVEUR WEB")
+print("BOT SOL/USDT - VERSION CORRIGEE")
 print("=" * 60)
-print(f"[DEBUG] API_KEY définie: {bool(API_KEY)}")
-print(f"[DEBUG] API_SECRET définie: {bool(API_SECRET)}")
+print(f"[DEBUG] API_KEY definie: {bool(API_KEY)}")
+print(f"[DEBUG] API_SECRET definie: {bool(API_SECRET)}")
 print(f"[DEBUG] PAPER_MODE: {PAPER_MODE}")
 print("=" * 60)
 
 class SimpleBot:
     def __init__(self):
-        print("[DEBUG] __init__ appelé")
+        print("[DEBUG] __init__ appele")
         if PAPER_MODE:
             print("Mode : PAPER TRADING")
-            self.exchange = ccxt.gateio({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'enableRateLimit': True,
-    'options': {'createMarketBuyOrderRequiresPrice': False},
-})
-                print("[DEBUG] Exchange créé - test de connexion")
-                self.exchange.fetch_time()
-                print("Connexion à Gate.io réussie!")
-            except Exception as e:
-                print(f"Erreur de connexion à Gate.io: {e}")
+            self.exchange = ccxt.gateio({'enableRateLimit': True})
+            self.balance = {'USDT': 10000, 'SOL': 0}
+            self.position = None
+        else:
+            print("[DEBUG] Mode TRADING REEL - verification des cles")
+            if not API_KEY or not API_SECRET:
+                print("ERREUR: Les variables d'environnement ne sont pas definies!")
                 sys.exit(1)
             
-            print("[DEBUG] Récupération du solde")
+            print("[DEBUG] Cles API OK - creation de l'echange")
+            try:
+                self.exchange = ccxt.gateio({
+                    'apiKey': API_KEY,
+                    'secret': API_SECRET,
+                    'enableRateLimit': True,
+                    'options': {'createMarketBuyOrderRequiresPrice': False},
+                })
+                print("[DEBUG] Exchange cree - test de connexion")
+                self.exchange.fetch_time()
+                print("Connexion a Gate.io reussie!")
+            except Exception as e:
+                print(f"Erreur de connexion a Gate.io: {e}")
+                sys.exit(1)
+            
+            print("[DEBUG] Recuperation du solde")
             self.balance = self.get_real_balance()
-            print(f"[DEBUG] Solde récupéré: USDT={self.balance.get('USDT', 0)}, SOL={self.balance.get('SOL', 0)}")
+            print(f"[DEBUG] Solde recupere: USDT={self.balance.get('USDT', 0)}, SOL={self.balance.get('SOL', 0)}")
             
             sol_balance = float(self.balance.get('SOL', 0))
             if sol_balance >= MIN_POSITION_THRESHOLD:
                 self.position = {'side': 'long', 'entry': 0, 'amount': sol_balance}
-                print(f"Position existante détectée: {sol_balance} SOL")
+                print(f"Position existante detectee: {sol_balance} SOL")
             else:
-                print(f"Dust ignoré: {sol_balance} SOL - Pas de position")
+                print(f"Dust ignore: {sol_balance} SOL - Pas de position")
                 self.position = None
-        print("[DEBUG] __init__ terminé avec succès")
+        print("[DEBUG] __init__ termine avec succes")
 
     def get_real_balance(self):
         try:
@@ -134,7 +145,7 @@ class SimpleBot:
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
             return df.dropna()
         except Exception as e:
-            print(f"Erreur données: {e}")
+            print(f"Erreur donnees: {e}")
             return None
 
     def calculate_rsi(self, data, period=14):
@@ -232,7 +243,7 @@ class SimpleBot:
                 return False
             is_profitable, profit_pct, details = self.calculate_profitability(current_price)
             if profit_pct >= TAKE_PROFIT_THRESHOLD and profit_pct > 0:
-                print(f"  -> TAKE-PROFIT! Vente automatique à {profit_pct:.2f}% (+{details.get('profit_usdt', 0):.2f}$)")
+                print(f"  -> TAKE-PROFIT! Vente automatique a {profit_pct:.2f}% (+{details.get('profit_usdt', 0):.2f}$)")
                 return True
             if is_profitable and profit_pct >= MIN_PROFIT_THRESHOLD:
                 if rsi >= RSI_SELL_THRESHOLD:
@@ -260,7 +271,7 @@ class SimpleBot:
                 return
             total_usdt = float(self.balance.get('USDT', 0))
             usdt_to_use = (total_usdt - MIN_USDT_RESERVE) * (MAX_USDT_PERCENT / 100)
-            print(f"[DEBUG] Achat - Solde USDT: {total_usdt}, À utiliser: {usdt_to_use}")
+            print(f"[DEBUG] Achat - Solde USDT: {total_usdt}, A utiliser: {usdt_to_use}")
             if usdt_to_use > 5:
                 amount_before_fee = usdt_to_use / price
                 amount_after_fee = amount_before_fee * (1 - TRADING_FEE)
@@ -270,10 +281,10 @@ class SimpleBot:
                         self.balance['USDT'] -= usdt_to_use
                         self.balance['SOL'] += amount
                         self.position = {'side': 'long', 'entry': price, 'amount': amount}
-                        print(f"ACHAT simulé: {amount:.4f} SOL à ${price}")
+                        print(f"ACHAT simule: {amount:.4f} SOL a ${price}")
                     else:
                         order = self.exchange.create_order(SYMBOL, 'market', 'buy', usdt_to_use)
-                        print(f"ACHAT réel: {amount:.4f} SOL à ${price}")
+                        print(f"ACHAT reel: {amount:.4f} SOL a ${price}")
                         self.position = {'side': 'long', 'entry': price, 'amount': amount}
         except Exception as e:
             print(f"Erreur achat: {e}")
@@ -289,31 +300,31 @@ class SimpleBot:
                     return
                 is_profitable, profit_pct, details = self.calculate_profitability(price)
                 if not is_profitable:
-                    print(f"  -> Vente ANNULÉE: Non rentable")
+                    print(f"  -> Vente ANNULEE: Non rentable")
                     return
                 amount = sol_balance
                 if amount * price >= 7:
                     if PAPER_MODE:
                         self.balance['SOL'] = 0
                         self.balance['USDT'] += amount * price * (1 - TRADING_FEE)
-                        print(f"VENTE simulée: {amount:.4f} SOL à ${price}")
+                        print(f"VENTE simulee: {amount:.4f} SOL a ${price}")
                         self.position = None
                     else:
                         order = self.exchange.create_order(SYMBOL, 'market', 'sell', amount)
-                        print(f"VENTE réelle: {amount:.4f} SOL à ${price}")
+                        print(f"VENTE reelle: {amount:.4f} SOL a ${price}")
                         self.position = None
         except Exception as e:
             print(f"Erreur vente: {e}")
 
     def run(self):
-        print(f"\n===== DÉMARRAGE DU BOT GATE.IO SOL =====")
+        print(f"\n===== DEMARRAGE DU BOT GATE.IO SOL =====")
         print(f"Paire: {SYMBOL}")
         print(f"Timeframe: {TIMEFRAME}")
         print(f"Allocation: {MAX_USDT_PERCENT}% du solde USDT")
         print(f"Seuil d'achat RSI: < {RSI_BUY_THRESHOLD}")
-        print(f"Seuil de profit NET: {MIN_PROFIT_THRESHOLD}% (après {TOTAL_FEES*100}% frais)")
+        print(f"Seuil de profit NET: {MIN_PROFIT_THRESHOLD}% (apres {TOTAL_FEES*100}% frais)")
         print(f"Take-Profit: {TAKE_PROFIT_THRESHOLD}%")
-        print(f"Réserve: {MIN_USDT_RESERVE}$")
+        print(f"Reserve: {MIN_USDT_RESERVE}$")
         print(f"========================================\n")
 
         while True:
@@ -329,25 +340,25 @@ class SimpleBot:
                         sol_balance = float(self.balance.get('SOL', 0))
                         if self.position is None:
                             if self.should_buy(data):
-                                print("  -> Signal ACHAT détecté!")
+                                print("  -> Signal ACHAT detecte!")
                                 self.buy()
                         else:
                             if sol_balance < MIN_POSITION_THRESHOLD:
-                                print(f"  -> Dust ignoré: {sol_balance:.6f} SOL - Position réinitialisée")
+                                print(f"  -> Dust ignore: {sol_balance:.6f} SOL - Position reinitialisee")
                                 self.position = None
                                 if self.should_buy(data):
-                                    print("  -> Signal ACHAT détecté (après dust)!")
+                                    print("  -> Signal ACHAT detecte (apres dust)!")
                                     self.buy()
                             else:
                                 if self.should_sell(data):
-                                    print("  -> Signal VENTE détecté!")
+                                    print("  -> Signal VENTE detecte!")
                                     self.sell()
                         rsi = self.calculate_rsi(data)
                         macd, signal = self.calculate_macd(data)
                         print(f"  RSI: {rsi:.1f} | MACD: {macd:.2f} (signal: {signal:.2f})")
                 time.sleep(900)
             except KeyboardInterrupt:
-                print("\nBot arrêté!")
+                print("\nBot arrete!")
                 break
             except Exception as e:
                 print(f"Erreur: {e}")
@@ -356,15 +367,15 @@ class SimpleBot:
 def run_web_server():
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    print(f"Serveur web démarré sur le port {port}")
+    print(f"Serveur web demarre sur le port {port}")
     server.serve_forever()
 
 if __name__ == '__main__':
     import threading
-    print("[DEBUG] Démarrage du serveur web en arrière-plan")
+    print("[DEBUG] Demarrage du serveur web en arriere-plan")
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
-    print("[DEBUG] Création du bot")
+    print("[DEBUG] Creation du bot")
     bot = SimpleBot()
     print("[DEBUG] Lancement de la boucle principale")
     bot.run()
