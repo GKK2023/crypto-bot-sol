@@ -1,7 +1,7 @@
 """
 CryptoBot - Spot Trading Bot SOL/USDT
 Version avec serveur web minimal - CORRIGÉE
-NOUVELLE FONCTION: Récupération automatique du prix d'achat depuis l'historique des trades
+CORRECTION: Utilisation de l'historique des ordres au lieu des trades
 """
 import os
 import sys
@@ -104,33 +104,74 @@ class SimpleBot:
 
         sol_balance = float(self.balance.get('SOL', 0))
         if sol_balance >= MIN_POSITION_THRESHOLD:
-            # NOUVEAU: Récupérer le prix d'achat depuis l'historique des trades
-            entry_price = self.get_entry_price_from_trades()
+            # CORRIGE: Essayer d'abord les ordres, puis les trades
+            entry_price = self.get_entry_price_from_orders()
+            if not entry_price:
+                entry_price = self.get_entry_price_from_trades()
             if entry_price:
                 self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
                 print(f"Position existante detectee: {sol_balance} SOL @ prix d'achat: ${entry_price:.4f}")
             else:
-                # Si on ne peut pas récupérer le prix, utiliser le prix actuel comme estimation
-                current_price = self.get_price()
-                if current_price:
-                    self.position = {'side': 'long', 'entry': current_price, 'amount': sol_balance}
-                    print(f"Position existante detectee: {sol_balance} SOL @ prix actuel: ${current_price:.4f} (estimation)")
-                else:
-                    print(f"Impossible de determiner le prix d'achat - position ignoree")
-                    self.position = None
+                # Si on ne peut pas récupérer le prix, demander à l'utilisateur
+                print(f"ATTENTION: Impossible de trouver le prix d'achat automatiquement!")
+                print(f"Veuille enter manuellement le prix d'achat (ex: 86.36) ou appuyez sur Entree pour utiliser le prix actuel:")
+                try:
+                    manual_entry = input("Prix d'achat manuel (ou Entree): ")
+                    if manual_entry.strip():
+                        manual_price = float(manual_entry)
+                        self.position = {'side': 'long', 'entry': manual_price, 'amount': sol_balance}
+                        print(f"Position definie manuellement: {sol_balance} SOL @ ${manual_price:.4f}")
+                    else:
+                        current_price = self.get_price()
+                        if current_price:
+                            self.position = {'side': 'long', 'entry': current_price, 'amount': sol_balance}
+                            print(f"Position definie au prix actuel: {sol_balance} SOL @ ${current_price:.4f}")
+                        else:
+                            print(f"Impossible de determiner le prix - position ignoree")
+                            self.position = None
+                except:
+                    current_price = self.get_price()
+                    if current_price:
+                        self.position = {'side': 'long', 'entry': current_price, 'amount': sol_balance}
+                        print(f"Position definie au prix actuel: {sol_balance} SOL @ ${current_price:.4f}")
+                    else:
+                        self.position = None
         else:
             print(f"Dust ignore: {sol_balance} SOL - Pas de position")
             self.position = None
 
         print("[DEBUG] __init__ termine avec succes")
 
+    def get_entry_price_from_orders(self):
+        """Récupère le prix d'achat depuis l'historique des ordres (plus fiable)"""
+        try:
+            print("[DEBUG] Recherche du prix d'achat dans l'historique des ordres...")
+            # Chercher les ordres d'achat remplis
+            orders = self.exchange.fetch_closed_orders(SYMBOL, limit=10)
+            buy_orders = [o for o in orders if o['side'] == 'buy' and o['status'] == 'closed']
+            if buy_orders:
+                # Prendre le dernier ordre d'achat
+                last_buy = buy_orders[0]
+                price = last_buy.get('average') or last_buy.get('price')
+                if price:
+                    print(f"[DEBUG] Prix d'achat trouve dans les ordres: ${float(price):.4f}")
+                    return float(price)
+            print("[DEBUG] Aucun ordre d'achat trouve")
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Erreur lors de la recherche dans les ordres: {e}")
+            return None
+
     def get_entry_price_from_trades(self):
-        """Récupère le prix d'achat moyen depuis l'historique des trades récents"""
+        """Récupère le prix d'achat moyen depuis l'historique des trades"""
         try:
             print("[DEBUG] Recherche du prix d'achat dans l'historique des trades...")
             trades = self.exchange.fetch_my_trades(SYMBOL, limit=20)
+            if not trades:
+                print("[DEBUG] Aucun trade trouve")
+                return None
             # Filtrer seulement les achats
-            buy_trades = [t for t in trades if t['side'] == 'buy' and t['status'] == 'closed']
+            buy_trades = [t for t in trades if t['side'] == 'buy']
             if buy_trades:
                 # Prendre les trades les plus récents
                 total_cost = 0
