@@ -1,6 +1,7 @@
 """
 CryptoBot - Spot Trading Bot SOL/USDT
 Version avec serveur web minimal - CORRIGÉE
+NOUVELLE FONCTION: Récupération automatique du prix d'achat depuis l'historique des trades
 """
 import os
 import sys
@@ -103,13 +104,49 @@ class SimpleBot:
 
         sol_balance = float(self.balance.get('SOL', 0))
         if sol_balance >= MIN_POSITION_THRESHOLD:
-            self.position = {'side': 'long', 'entry': 0, 'amount': sol_balance}
-            print(f"Position existante detectee: {sol_balance} SOL")
+            # NOUVEAU: Récupérer le prix d'achat depuis l'historique des trades
+            entry_price = self.get_entry_price_from_trades()
+            if entry_price:
+                self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
+                print(f"Position existante detectee: {sol_balance} SOL @ prix d'achat: ${entry_price:.4f}")
+            else:
+                # Si on ne peut pas récupérer le prix, utiliser le prix actuel comme estimation
+                current_price = self.get_price()
+                if current_price:
+                    self.position = {'side': 'long', 'entry': current_price, 'amount': sol_balance}
+                    print(f"Position existante detectee: {sol_balance} SOL @ prix actuel: ${current_price:.4f} (estimation)")
+                else:
+                    print(f"Impossible de determiner le prix d'achat - position ignoree")
+                    self.position = None
         else:
             print(f"Dust ignore: {sol_balance} SOL - Pas de position")
             self.position = None
 
         print("[DEBUG] __init__ termine avec succes")
+
+    def get_entry_price_from_trades(self):
+        """Récupère le prix d'achat moyen depuis l'historique des trades récents"""
+        try:
+            print("[DEBUG] Recherche du prix d'achat dans l'historique des trades...")
+            trades = self.exchange.fetch_my_trades(SYMBOL, limit=20)
+            # Filtrer seulement les achats
+            buy_trades = [t for t in trades if t['side'] == 'buy' and t['status'] == 'closed']
+            if buy_trades:
+                # Prendre les trades les plus récents
+                total_cost = 0
+                total_amount = 0
+                for t in buy_trades[:5]:  # 5 derniers achats
+                    total_cost += t.get('cost', 0)
+                    total_amount += t.get('amount', 0)
+                if total_amount > 0:
+                    avg_price = total_cost / total_amount
+                    print(f"[DEBUG] Prix d'achat moyen trouve: ${avg_price:.4f}")
+                    return avg_price
+            print("[DEBUG] Aucun trade d'achat trouve dans l'historique")
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Erreur lors de la recherche du prix d'achat: {e}")
+            return None
 
     def get_real_balance(self):
         try:
@@ -246,7 +283,7 @@ class SimpleBot:
 
             is_profitable, profit_pct, details = self.calculate_profitability(current_price)
 
-            # SI Profit >= 0.5% → VENDRE (peu importe le RSI)
+            # NOUVELLE LOGIQUE: SI Profit >= 0.5% → VENDRE (peu importe le RSI)
             if profit_pct >= MIN_PROFIT_THRESHOLD and profit_pct > 0:
                 print(f" -> Vente RENTABLE: {profit_pct:.2f}% (+{details.get('profit_usdt', 0):.2f}$)")
                 return True
