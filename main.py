@@ -2,7 +2,7 @@ import os
 import time
 import logging
 from datetime import datetime
-from gate_api import ApiClient, Spot, Configuration, Order
+from gate_api import ApiClient, Configuration
 from gate_api.api import spot_api
 import ccxt
 
@@ -25,7 +25,7 @@ MIN_POSITION_THRESHOLD = 0.001
 
 config = Configuration(key=API_KEY, secret=API_SECRET)
 api_client = ApiClient(config)
-spotApi = Spot(api_client)
+spotApi = spot_api.SpotApi(api_client)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -61,7 +61,7 @@ class CryptoTradingBot:
                 
                 if not entry_price and SOL_ENTRY_PRICE:
                     entry_price = float(SOL_ENTRY_PRICE)
-                    print(f"[DEBUG] Utilisation du prix d'achat depuis env var: ${entry_price:.4f}")
+                    print(f"[DEBUG] Prix depuis env: ${entry_price:.4f}")
                 
                 if entry_price:
                     self.position = {
@@ -69,20 +69,19 @@ class CryptoTradingBot:
                         'entry': entry_price,
                         'amount': sol_balance
                     }
-                    print(f"Position existante détectée: {sol_balance} SOL @ ${entry_price:.4f}")
+                    print(f"Position: {sol_balance} SOL @ ${entry_price:.4f}")
                 else:
-                    print("Impossible de déterminer le prix d'achat.")
-                    self.position = None
+                    print("Prix d'achat non trouvé.")
             else:
-                print("Aucun SOL en position.")
+                print("Pas de position SOL.")
         else:
-            print("Impossible de récupérer le solde.")
+            print("Solde non récupéré.")
 
     def get_balance(self):
         try:
             return self.exchange.fetch_balance()
         except Exception as e:
-            print(f"Erreur solde: {e}")
+            print(f"Erreur: {e}")
             return None
 
     def get_entry_price_from_trades(self, amount):
@@ -128,7 +127,6 @@ class CryptoTradingBot:
     def buy(self, current_price):
         try:
             if not self.balance:
-                print("Solde insuffisant")
                 return False
             
             usdt_balance = float(self.balance.get('USDT', {}).get('available', 0))
@@ -146,16 +144,16 @@ class CryptoTradingBot:
             quantity = invest_amount / current_price
             price_with_margin = current_price * 1.001
             
-            order = Order(
-                currency_pair=self.symbol.replace('/', '_'),
-                side='buy',
-                type='limit',
-                price=str(price_with_margin),
-                amount=str(quantity)
-            )
+            order = {
+                'currency_pair': self.symbol.replace('/', '_'),
+                'side': 'buy',
+                'type': 'limit',
+                'price': str(price_with_margin),
+                'amount': str(quantity)
+            }
             
             print(f"ACHAT: {quantity:.4f} SOL @ ${price_with_margin:.2f}")
-            result = spotApi.create_order(order)
+            result = spotApi.create_order(**order)
             print(f"Commande: {result.id}")
             
             self.position = {
@@ -164,11 +162,11 @@ class CryptoTradingBot:
                 'amount': quantity
             }
             
-            print(f"[INFO] Prix achat: ${current_price:.4f}")
+            print(f"[INFO] Prix: ${current_price:.4f}")
             return True
             
         except Exception as e:
-            print(f"Erreur achat: {e}")
+            print(f"Erreur: {e}")
             return False
 
     def sell(self, current_price):
@@ -181,29 +179,29 @@ class CryptoTradingBot:
             profit_pct = ((current_price - entry_price) / entry_price) * 100
             profit_value = (current_price - entry_price) * amount
             
-            print(f"-> Vente RENTABLE: {profit_pct:.2f}% (+{profit_value:.2f}$)")
+            print(f"-> Vente: {profit_pct:.2f}% (+{profit_value:.2f}$)")
             
             if profit_pct < self.min_profit:
-                print(f"-> Vente ANNULÉE: Profit {profit_pct:.2f}% trop faible")
+                print(f"-> Annulée: {profit_pct:.2f}%")
                 return False
             
-            order = Order(
-                currency_pair=self.symbol.replace('/', '_'),
-                side='sell',
-                type='limit',
-                price=str(current_price),
-                amount=str(amount)
-            )
+            order = {
+                'currency_pair': self.symbol.replace('/', '_'),
+                'side': 'sell',
+                'type': 'limit',
+                'price': str(current_price),
+                'amount': str(amount)
+            }
             
             print(f"VENTE: {amount:.4f} SOL @ ${current_price:.2f}")
-            result = spotApi.create_order(order)
+            result = spotApi.create_order(**order)
             print(f"Commande: {result.id}")
             
             self.position = None
             return True
             
         except Exception as e:
-            print(f"Erreur vente: {e}")
+            print(f"Erreur: {e}")
             return False
 
     def should_buy(self, rsi):
@@ -219,9 +217,8 @@ class CryptoTradingBot:
 
     def run(self):
         print(f"{'='*60}")
-        print(f"Bot SOL - Vérification toutes les 3 minutes")
-        print(f"Paire: {self.symbol} | Timeframe: {self.timeframe}")
-        print(f"Seuil achat RSI: < {self.min_rsi_buy} | Profit: {self.min_profit}%")
+        print(f"Bot SOL - 3 minutes")
+        print(f"Paire: {self.symbol}")
         print(f"{'='*60}")
         
         while True:
@@ -257,23 +254,21 @@ class CryptoTradingBot:
                             print(f"  -> Profit: {profit_pct:.2f}% | Cible: {target_price:.2f}$ (min: {min_target:.2f}$)")
                             
                             if self.should_sell(current_price, rsi, None, None):
-                                print(f"  -> Signal VENTE!")
+                                print(f"  -> VENTE!")
                                 self.sell(current_price)
                             else:
                                 print(f"  -> En attente: {profit_pct:.2f}% < {self.min_profit}%")
-                        else:
-                            print(f"  -> Impossible calcul profit")
                     else:
                         print(f"  -> En attente | RSI: {rsi:.1f}")
                         
                         if self.should_buy(rsi):
-                            print(f"  -> Signal ACHAT! RSI: {rsi:.1f}")
+                            print(f"  -> ACHAT! RSI: {rsi:.1f}")
                             self.buy(current_price)
                 
                 if rsi is not None:
                     print(f"  RSI: {rsi:.1f}")
                 
-                # 3 minutes = 180 secondes
+                # 3 minutes
                 time.sleep(180)
                 
             except Exception as e:
