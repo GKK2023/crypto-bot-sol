@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Bot SOL - Trading automatisé avec buy/sell sur Gate.io
-Version corrigée - Vente rentable
+Version corrigée - URL API + Vente rentable
 """
 
 import os
@@ -21,8 +21,8 @@ RSI_BUY_THRESHOLD = 30
 MIN_PROFIT_PERCENT = 0.5  # Seuil de profit minimum (0.5%)
 RESERVE_USDT = 5  # Réserve minimale en USDT
 
-# === GATE.IO API ===
-BASE_URL = "https://api.gateio.ai"
+# === GATE.IO API - URL CORRIGÉE ===
+BASE_URL = "https://api.gateio.io"
 
 def gate_request(method, path, signed=False):
     """Effectue une requête à l'API Gate.io"""
