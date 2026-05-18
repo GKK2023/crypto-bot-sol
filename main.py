@@ -1,337 +1,531 @@
-#!/usr/bin/env python3
-"""
-Bot SOL - Trading automatisé avec buy/sell sur Gate.io
-Version robuste avec gestion d'erreurs améliorée
-"""
+# CryptoBot - Spot Trading Bot SOL/USDT
+# Version avec persistance du prix d'achat
 
 import os
+import sys
+import ccxt
 import time
-import requests
+import json
+import pandas as pd
 from datetime import datetime
-import http.server
-import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# === CONFIGURATION ===
-GATEIO_API_KEY = os.getenv('GATEIO_API_KEY')
-GATEIO_API_SECRET = os.getenv('GATEIO_API_SECRET')
-PAIR = "SOL/USDT"
-TIMEFRAME = "15m"
-ALLOCATION_USDT = 0.20  # 20% du solde pour chaque achat
+# Configuration
+SYMBOL = 'SOL/USDT'
+TIMEFRAME = '15m'
+PAPER_MODE = False
+
+# Clés API Gate.io
+API_KEY = os.getenv('GATEIO_API_KEY', '')
+API_SECRET = os.getenv('GATEIO_API_SECRET', '')
+
+# Variable d'environnement pour prix d'achat manuel
+MANUAL_ENTRY_PRICE = os.getenv('ENTRY_PRICE')
+
+# Frais Gate.io
+TRADING_FEE = 0.001
+TOTAL_FEES = 0.002
+
+# Solde minimum à garder en USDT
+MIN_USDT_RESERVE = 5
+
+# Pourcentage du solde à utiliser (SOL est plus volatile, donc plus prudent)
+MAX_USDT_PERCENT = 20
+
+# Seuil de profit minimum NET
+MIN_PROFIT_THRESHOLD = 0.5
+
+# Take-Profit automatique
+TAKE_PROFIT_THRESHOLD = 1.5
+
+# Seuil RSI pour achat (SOL plus volatil, seuil plus bas)
 RSI_BUY_THRESHOLD = 30
-MIN_PROFIT_PERCENT = 0.5  # Seuil de profit minimum (0.5%)
-RESERVE_USDT = 5  # Réserve minimale en USDT
 
-# === GATE.IO API ===
-BASE_URL = "https://api.gateio.io"
+# Seuil minimum pour une vraie position
+MIN_POSITION_THRESHOLD = 0.001
 
-def gate_request(method, path, signed=False, retry=2):
-    """Effectue une requête à l'API Gate.io avec gestion d'erreurs"""
-    for attempt in range(retry):
-        try:
-            url = BASE_URL + path
-            headers = {}
-            if signed and GATEIO_API_KEY and GATEIO_API_SECRET:
-                import hmac
-                import hashlib
-                timestamp = str(int(time.time()))
-                message = timestamp + method + path
-                signature = hmac.new(
-                    GATEIO_API_SECRET.encode(), 
-                    message.encode(), 
-                    hashlib.sha512
-                ).hexdigest()
-                headers = {
-                    "key": GATEIO_API_KEY,
-                    "timestamp": timestamp,
-                    "sign": signature,
-                    "Content-Type": "application/json"
-                }
-            elif GATEIO_API_KEY:
-                headers = {"key": GATEIO_API_KEY}
-            
-            response = requests.request(
-                method, url, headers=headers, timeout=10
-            )
-            
-            # Debug: voir le statut et la réponse
-            if response.status_code != 200:
-                print(f"[DEBUG] HTTP {response.status_code}: {response.text[:200]}")
-            
-            if not response.text:
-                print(f"[DEBUG] Réponse vide pour {path}")
-                time.sleep(2)
-                continue
-                
-            return response.json()
-            
-        except requests.exceptions.Timeout:
-            print(f"[DEBUG] Timeout sur {path}, tentative {attempt + 1}")
-            time.sleep(3)
-        except requests.exceptions.ConnectionError as e:
-            print(f"[DEBUG] Erreur connexion: {e}")
-            time.sleep(5)
-        except Exception as e:
-            print(f"[DEBUG] Erreur requête: {e}")
-            time.sleep(2)
-    
-    return None
+# Fichier pour sauvegarder le prix d'achat
+ENTRY_PRICE_FILE = 'entry_price.json'
 
-# === INDICATEURS TECHNIQUES ===
-def calculate_rsi(prices, period=14):
-    """Calcule le RSI"""
-    if len(prices) < period + 1:
-        return 50
-    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-    gains = [d if d > 0 else 0 for d in deltas[-period:]]
-    losses = [-d if d < 0 else 0 for d in deltas[-period:]]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
 
-def calculate_macd(prices, fast=12, slow=26, signal=9):
-    """Calcule le MACD"""
-    if len(prices) < slow + signal:
-        return 0, 0
-    ema_fast = sum(prices[-fast:]) / fast
-    ema_slow = sum(prices[-slow:]) / slow
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line
-    return macd_line, signal_line
-
-# === FONCTIONS DE TRADING ===
-def get_spot_balance():
-    """Récupère le solde spot USDT et SOL"""
-    try:
-        data = gate_request("GET", "/api/v4/spot/accounts", signed=True)
-        if data is None or not isinstance(data, list):
-            print(f"[DEBUG] Réponse solde invalide: {data}")
-            return 0, 0
-        usdt_balance = 0
-        sol_balance = 0
-        for acc in data:
-            if acc.get("currency") == "USDT":
-                usdt_balance = float(acc.get("available", 0))
-            elif acc.get("currency") == "SOL":
-                sol_balance = float(acc.get("available", 0))
-        return usdt_balance, sol_balance
-    except Exception as e:
-        print(f"[ERROR] Erreur solde: {e}")
-        return 0, 0
-
-def get_current_price():
-    """Récupère le prix actuel de SOL/USDT"""
-    try:
-        data = gate_request("GET", "/api/v4/spot/tickers?currency_pair=SOL_USDT")
-        if data and isinstance(data, list) and len(data) > 0:
-            return float(data[0]["last"])
-        print(f"[DEBUG] Prix invalide: {data}")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Erreur prix: {e}")
-        return None
-
-def get_ohlcv():
-    """Récupère les données OHLCV pour le RSI et MACD"""
-    try:
-        params = f"?currency_pair=SOL_USDT&interval={TIMEFRAME}&limit=50"
-        data = gate_request("GET", f"/api/v4/spot/candles{params}")
-        if data and isinstance(data, list):
-            return [float(c[2]) for c in data]
-        return []
-    except Exception as e:
-        print(f"[ERROR] Erreur OHLCV: {e}")
-        return []
-
-def get_total_spent():
-    """Calcule le montant total dépensé pour les SOL achetés"""
-    try:
-        trades = gate_request(
-            "GET", 
-            "/api/v4/spot/trades?currency_pair=SOL_USDT&side=buy&limit=10", 
-            signed=True
-        )
-        if not trades or not isinstance(trades, list):
-            return 0, 0
-        total_spent = 0
-        total_sol = 0
-        for trade in trades:
-            price = float(trade["price"])
-            amount = float(trade["amount"])
-            total_spent += price * amount
-            total_sol += amount
-        if total_sol > 0:
-            return total_spent, total_sol
-        return 0, 0
-    except Exception as e:
-        print(f"[DEBUG] Erreur spent: {e}")
-        return 0, 0
-
-def buy():
-    """Execute un achat de SOL"""
-    try:
-        usdt_balance, _ = get_spot_balance()
-        available_usdt = usdt_balance - RESERVE_USDT
-        if available_usdt <= 0:
-            print("-> Solde insuffisant pour l'achat")
-            return False
-        buy_amount = available_usdt * ALLOCATION_USDT
-        if buy_amount < 10:
-            print("-> Montant trop faible")
-            return False
-        price = get_current_price()
-        if price is None:
-            return False
-        quantity = round(buy_amount / price, 4)
-        payload = {
-            "currency_pair": "SOL_USDT",
-            "side": "buy",
-            "type": "market",
-            "amount": str(quantity)
-        }
-        result = gate_request("POST", "/api/v4/spot/orders", signed=True)
-        if result and "id" in result:
-            print(f"-> ACHAT: {quantity} SOL à ${price}")
-            return True
-        else:
-            print(f"-> ERREUR achat: {result}")
-            return False
-    except Exception as e:
-        print(f"-> ERREUR achat: {e}")
-        return False
-
-def sell():
-    """Execute une vente de SOL"""
-    try:
-        _, sol_balance = get_spot_balance()
-        if sol_balance < 0.001:
-            return False
-        price = get_current_price()
-        if price is None:
-            return False
-        total_spent, total_sol = get_total_spent()
-        if total_sol > 0:
-            avg_buy_price = total_spent / total_sol
-            profit_percent = ((price - avg_buy_price) / avg_buy_price) * 100
-            net_profit = profit_percent - 0.4
-            profit_value = (price - avg_buy_price) * sol_balance
-            print(f" -> Profit: {net_profit:.2f}% (net)")
-            if net_profit >= MIN_PROFIT_PERCENT:
-                quantity = round(sol_balance, 4)
-                payload = {
-                    "currency_pair": "SOL_USDT",
-                    "side": "sell",
-                    "type": "market",
-                    "amount": str(quantity)
-                }
-                result = gate_request("POST", "/api/v4/spot/orders", signed=True)
-                if result and "id" in result:
-                    print(f"-> VENTE: {quantity} SOL | Profit: +{profit_value:.2f}$")
-                    return True
-                else:
-                    print(f"-> ERREUR vente: {result}")
-                    return False
-            else:
-                print(f" -> Annulé: profit {net_profit:.2f}% < {MIN_PROFIT_PERCENT}%")
-                return False
-        return False
-    except Exception as e:
-        print(f"-> ERREUR vente: {e}")
-        return False
-
-def should_sell():
-    """Vérifie si les conditions de vente sont réunies"""
-    try:
-        closes = get_ohlcv()
-        if len(closes) < 30:
-            return False, 50
-        rsi = calculate_rsi(closes)
-        macd, signal = calculate_macd(closes)
-        if rsi > 60 and macd < signal:
-            return True, rsi
-        return False, rsi
-    except Exception as e:
-        return False, 50
-
-def should_buy():
-    """Vérifie si les conditions d'achat sont réunies"""
-    try:
-        closes = get_ohlcv()
-        if len(closes) < 30:
-            return False, 50
-        rsi = calculate_rsi(closes)
-        return rsi < RSI_BUY_THRESHOLD, rsi
-    except Exception as e:
-        return False, 50
-
-def run():
-    """Boucle principale du bot"""
-    print("=" * 60)
-    print("Bot SOL - Mode 3 minutes")
-    print(f"Paire: {PAIR}")
-    print(f"Seuil achat RSI: < {RSI_BUY_THRESHOLD}")
-    print(f"Seuil profit NET: {MIN_PROFIT_PERCENT}%")
-    print("=" * 60)
-    
-    while True:
-        try:
-            price = get_current_price()
-            if price is None:
-                print("[DEBUG] Prix non récupéré, retry dans 30s")
-                time.sleep(30)
-                continue
-            
-            usdt_balance, sol_balance = get_spot_balance()
-            closes = get_ohlcv()
-            rsi = calculate_rsi(closes) if len(closes) >= 15 else 50
-            macd, signal = calculate_macd(closes) if len(closes) >= 35 else (0, 0)
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            
-            if sol_balance > 0.001:
-                total_spent, total_sol = get_total_spent()
-                if total_sol > 0:
-                    avg_price = total_spent / total_sol
-                    profit_pct = ((price - avg_price) / avg_price) * 100 - 0.4
-                    min_sell = avg_price * (1 + MIN_PROFIT_PERCENT / 100)
-                    print(f"{timestamp} | Prix: ${price:.2f}")
-                    print(f" USDT: {usdt_balance:.2f} | SOL: {sol_balance:.4f}")
-                    print(f" Acheté: ${avg_price:.2f} | Profit: {profit_pct:.2f}% | Cible: ${min_sell:.2f}")
-                    sell_signal, _ = should_sell()
-                    print(f" RSI: {rsi:.1f} | MACD: {macd:.2f} (signal: {signal:.2f})")
-                    if sell_signal and profit_pct >= MIN_PROFIT_PERCENT:
-                        sell()
-                else:
-                    print(f"{timestamp} | Prix: ${price:.2f}")
-                    print(f" USDT: {usdt_balance:.2f} | SOL: {sol_balance:.4f} -> En attente")
-                    print(f" RSI: {rsi:.1f} | MACD: {macd:.2f} (signal: {signal:.2f})")
-            else:
-                print(f"{timestamp} | Prix: ${price:.2f}")
-                print(f" USDT: {usdt_balance:.2f} | SOL: 0.0000")
-                buy_signal, _ = should_buy()
-                print(f" RSI: {rsi:.1f} | MACD: {macd:.2f} (signal: {signal:.2f})")
-                if buy_signal:
-                    buy()
-                    
-        except Exception as e:
-            print(f"[ERROR] Boucle: {e}")
-        
-        time.sleep(180)
-
-# === SERVEUR WEB ===
-class MinimalHandler(http.server.BaseHTTPRequestHandler):
+class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header('Content-type', 'text/html')
         self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, *args):
-        pass
+        response = "<html><body><h1>CryptoBot</h1><p>Bot SOL/USDT Active</p></body></html>"
+        self.wfile.write(response.encode())
 
-def start_server():
-    server = http.server.HTTPServer(("0.0.0.0", 8080), MinimalHandler)
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+
+
+class SimpleBot:
+    
+    def save_entry_price(self, entry_price, amount):
+        """Sauvegarde le prix d'achat dans un fichier"""
+        try:
+            data = {
+                'entry_price': entry_price,
+                'amount': amount,
+                'timestamp': datetime.now().isoformat()
+            }
+            with open(ENTRY_PRICE_FILE, 'w') as f:
+                json.dump(data, f)
+            print(f"[DEBUG] Prix d'achat sauvegarde: ${entry_price:.4f}")
+        except Exception as e:
+            print(f"[DEBUG] Erreur sauvegarde: {e}")
+    
+    def load_entry_price(self):
+        """Charge le prix d'achat depuis un fichier"""
+        try:
+            if os.path.exists(ENTRY_PRICE_FILE):
+                with open(ENTRY_PRICE_FILE, 'r') as f:
+                    data = json.load(f)
+                entry_price = data.get('entry_price', 0)
+                amount = data.get('amount', 0)
+                if entry_price > 0:
+                    print(f"[DEBUG] Prix d'achat charge depuis fichier: ${entry_price:.4f}")
+                    return entry_price, amount
+        except Exception as e:
+            print(f"[DEBUG] Erreur chargement: {e}")
+        return None, 0
+    
+    def clear_entry_price(self):
+        """Efface le fichier du prix d'achat (après vente)"""
+        try:
+            if os.path.exists(ENTRY_PRICE_FILE):
+                os.remove(ENTRY_PRICE_FILE)
+                print("[DEBUG] Fichier prix d'achat efface")
+        except:
+            pass
+    
+    def __init__(self):
+        print(f"[DEBUG] Bot SOL - __init__ appele")
+        
+        if PAPER_MODE:
+            self.exchange = ccxt.gateio({'enableRateLimit': True})
+            self.balance = {'USDT': 10000, 'SOL': 0}
+            self.position = None
+        else:
+            if not API_KEY or not API_SECRET:
+                print("ERREUR: Les variables d'environnement ne sont pas definies!")
+                sys.exit(1)
+            try:
+                self.exchange = ccxt.gateio({
+                    'apiKey': API_KEY,
+                    'secret': API_SECRET,
+                    'enableRateLimit': True,
+                    'options': {'createMarketBuyOrderRequiresPrice': False},
+                })
+                self.exchange.fetch_time()
+                print("Connexion a Gate.io SOL reussie!")
+            except Exception as e:
+                print(f"Erreur de connexion: {e}")
+                sys.exit(1)
+
+        self.balance = self.get_real_balance()
+        print(f"[DEBUG] Solde: USDT={self.balance.get('USDT', 0)}, SOL={self.balance.get('SOL', 0)}")
+
+        sol_balance = float(self.balance.get('SOL', 0))
+        if sol_balance >= MIN_POSITION_THRESHOLD:
+            # ===== PRIORITE 1: Variable d'environnement ENTRY_PRICE =====
+            if MANUAL_ENTRY_PRICE:
+                try:
+                    entry_price = float(MANUAL_ENTRY_PRICE)
+                    self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
+                    print(f"[IMPORTANT] Position SOL (depuis ENV): {sol_balance} @ ${entry_price:.4f}")
+                    return
+                except Exception as e:
+                    print(f"[DEBUG] Erreur lecture ENTRY_PRICE: {e}")
+            
+            # ===== PRIORITE 2: Fichier sauvegarde =====
+            entry_price, saved_amount = self.load_entry_price()
+            if entry_price and saved_amount > 0:
+                self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
+                print(f"Position SOL (depuis fichier): {sol_balance} @ ${entry_price:.4f}")
+                return
+            
+            # ===== PRIORITE 3: Historique des trades =====
+            entry_price = self.get_entry_price_from_trades()
+            if not entry_price:
+                entry_price = self.get_entry_price_from_orders()
+            
+            if entry_price:
+                self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
+                self.save_entry_price(entry_price, sol_balance)
+                print(f"Position SOL (depuis trades): {sol_balance} @ ${entry_price:.4f}")
+                return
+            
+            # ===== PRIORITE 4: Prix actuel (dernier recours) =====
+            current_price = self.get_price()
+            if current_price:
+                self.position = {'side': 'long', 'entry': current_price, 'amount': sol_balance}
+                self.save_entry_price(current_price, sol_balance)
+                print(f"[ATTENTION] Position SOL (prix actuel): {sol_balance} @ ${current_price:.4f}")
+            else:
+                self.position = None
+        else:
+            print(f"Pas de position SOL")
+            self.position = None
+
+
+    def get_entry_price_from_orders(self):
+        try:
+            orders = self.exchange.fetch_closed_orders(SYMBOL, limit=20)
+            buy_orders = [o for o in orders if o['side'] == 'buy' and o['status'] == 'closed']
+            if buy_orders:
+                buy_orders.sort(key=lambda x: x.get('timestamp', 0))
+                for order in buy_orders:
+                    price = order.get('average') or order.get('price')
+                    if price and float(price) > 0:
+                        print(f"[DEBUG] Prix achat (orders): ${float(price):.4f}")
+                        return float(price)
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Erreur ordres: {e}")
+            return None
+
+
+    def get_entry_price_from_trades(self):
+        try:
+            trades = self.exchange.fetch_my_trades(SYMBOL, limit=100)
+            if not trades:
+                return None
+            
+            buy_trades = [t for t in trades if t['side'] == 'buy']
+            if buy_trades:
+                buy_trades.sort(key=lambda x: x.get('timestamp', 0))
+                first_buy = buy_trades[0]
+                price = first_buy.get('price') or first_buy.get('average')
+                
+                if price and float(price) > 0:
+                    print(f"[DEBUG] Prix achat (trades): ${float(price):.4f}")
+                    return float(price)
+            
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Erreur trades: {e}")
+            return None
+
+
+    def get_real_balance(self):
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt_balance = 0
+            sol_balance = 0
+            if isinstance(balance, dict):
+                total = balance.get('total', {})
+                if isinstance(total, dict):
+                    usdt_balance = float(total.get('USDT', 0) or 0)
+                    sol_balance = float(total.get('SOL', 0) or 0)
+            return {'USDT': usdt_balance, 'SOL': sol_balance}
+        except Exception as e:
+            print(f"Erreur solde: {e}")
+            return {'USDT': 0, 'SOL': 0}
+
+
+    def get_price(self):
+        try:
+            ticker = self.exchange.fetch_ticker(SYMBOL)
+            last = ticker.get('last')
+            if last is None:
+                last = ticker.get('close')
+            return float(last) if last is not None else None
+        except Exception as e:
+            print(f"Erreur prix: {e}")
+            return None
+
+
+    def get_data(self, limit=100):
+        try:
+            ohlcv = self.exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=limit)
+            if not ohlcv or len(ohlcv) < 26:
+                return None
+            
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            return df.dropna()
+        except Exception as e:
+            print(f"Erreur donnees: {e}")
+            return None
+
+
+    def calculate_rsi(self, data, period=14):
+        try:
+            if data is None or len(data) < period:
+                return 50.0
+            
+            closes = data['close'].values
+            if len(closes) < period:
+                return 50.0
+            
+            deltas = []
+            for i in range(1, len(closes)):
+                deltas.append(float(closes[i]) - float(closes[i-1]))
+            
+            gains = [max(d, 0) for d in deltas[-period:]]
+            losses = [abs(min(d, 0)) for d in deltas[-period:]]
+            
+            avg_gain = sum(gains) / period
+            avg_loss = sum(losses) / period
+            
+            if avg_loss == 0:
+                return 100.0
+            
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            return float(rsi)
+        except Exception as e:
+            return 50.0
+
+
+    def calculate_macd(self, data):
+        try:
+            if data is None or len(data) < 26:
+                return 0.0, 0.0
+            
+            closes = data['close'].values
+            if len(closes) < 26:
+                return 0.0, 0.0
+            
+            ema12 = self._calculate_ema(closes, 12)
+            ema26 = self._calculate_ema(closes, 26)
+            macd = ema12 - ema26
+            signal = self._calculate_ema([macd] * 9, 9)
+            return float(macd), float(signal)
+        except Exception as e:
+            return 0.0, 0.0
+
+    def _calculate_ema(self, values, period):
+        try:
+            values = [float(v) for v in values[-period:]]
+            multiplier = 2 / (period + 1)
+            ema = sum(values) / period
+            for value in values[1:]:
+                ema = (value * multiplier) + (ema * (1 - multiplier))
+            return ema
+        except:
+            return values[-1] if len(values) > 0 else 0
+
+
+    def calculate_profitability(self, current_price):
+        try:
+            if not self.position:
+                return True, 0.0, {}
+            
+            entry_price = float(self.position.get('entry', 0))
+            amount_sol = float(self.position.get('amount', 0))
+            
+            if entry_price == 0 or amount_sol == 0:
+                print(f"[DEBUG] Prix d'achat manquant!")
+                return True, 0.0, {}
+            
+            break_even_price = entry_price * (1 + TOTAL_FEES)
+            target_price = break_even_price * (1 + MIN_PROFIT_THRESHOLD / 100)
+            
+            profit_pct = ((current_price - entry_price) / entry_price) * 100
+            profit_usdt = (current_price - entry_price) * amount_sol
+            
+            is_profitable = current_price > target_price
+            
+            return is_profitable, float(profit_pct), {
+                'entry_price': entry_price,
+                'current_price': current_price,
+                'target_price': target_price,
+                'profit_usdt': profit_usdt
+            }
+        except Exception as e:
+            print(f"Erreur profit: {e}")
+            return True, 0.0, {}
+
+
+    def should_buy(self, data):
+        try:
+            rsi = self.calculate_rsi(data)
+            if rsi < RSI_BUY_THRESHOLD:
+                return True
+            return False
+        except Exception as e:
+            return False
+
+
+    def should_sell(self, data):
+        try:
+            current_price = self.get_price()
+            if current_price is None:
+                return False
+            
+            is_profitable, profit_pct, details = self.calculate_profitability(current_price)
+            
+            if profit_pct >= MIN_PROFIT_THRESHOLD and profit_pct > 0:
+                print(f" -> Vente RENTABLE: {profit_pct:.2f}% (+{details.get('profit_usdt', 0):.2f}$)")
+                return True
+            
+            if not is_profitable:
+                target = details.get('target_price', 0)
+                entry = details.get('entry_price', 0)
+                print(f" -> En attente: Profit: {profit_pct:.2f}% | Achat: ${entry:.2f} | Cible: ${target:.2f}")
+            else:
+                print(f" -> En attente: Profit: {profit_pct:.2f}% | Min: {MIN_PROFIT_THRESHOLD}%")
+            
+            return False
+        except Exception as e:
+            print(f"Erreur sell: {e}")
+            return False
+
+
+    def buy(self):
+        try:
+            if not PAPER_MODE:
+                self.balance = self.get_real_balance()
+            
+            price = self.get_price()
+            if price is None:
+                return
+            
+            total_usdt = float(self.balance.get('USDT', 0))
+            usdt_to_use = (total_usdt - MIN_USDT_RESERVE) * (MAX_USDT_PERCENT / 100)
+            
+            if usdt_to_use > 5:
+                amount_before_fee = usdt_to_use / price
+                amount_after_fee = amount_before_fee * (1 - TRADING_FEE)
+                
+                if amount_after_fee * price >= 7:
+                    amount = round(amount_after_fee, 4)
+                    
+                    if PAPER_MODE:
+                        self.balance['USDT'] -= usdt_to_use
+                        self.balance['SOL'] += amount
+                        self.position = {'side': 'long', 'entry': price, 'amount': amount}
+                        self.save_entry_price(price, amount)
+                        print(f"ACHAT simule: {amount:.4f} SOL @ ${price}")
+                    else:
+                        order = self.exchange.create_order(SYMBOL, 'market', 'buy', usdt_to_use)
+                        print(f"ACHAT reel: {amount:.4f} SOL @ ${price}")
+                        
+                        filled = order.get('fills', [])
+                        if filled:
+                            total_cost = sum(float(f.get('cost', 0)) for f in filled)
+                            total_amount = sum(float(f.get('amount', 0)) for f in filled)
+                            if total_amount > 0:
+                                real_entry = total_cost / total_amount
+                                self.position = {'side': 'long', 'entry': real_entry, 'amount': amount}
+                                self.save_entry_price(real_entry, amount)
+                                print(f"[DEBUG] Prix d'achat reel: ${real_entry:.4f}")
+                        else:
+                            self.position = {'side': 'long', 'entry': price, 'amount': amount}
+                            self.save_entry_price(price, amount)
+        except Exception as e:
+            print(f"Erreur achat: {e}")
+
+
+    def sell(self):
+        try:
+            if not PAPER_MODE:
+                self.balance = self.get_real_balance()
+            
+            sol_balance = float(self.balance.get('SOL', 0))
+            
+            if sol_balance >= MIN_POSITION_THRESHOLD:
+                price = self.get_price()
+                if price is None:
+                    return
+                
+                is_profitable, profit_pct, details = self.calculate_profitability(price)
+                
+                if not is_profitable:
+                    print(f" -> Vente ANNULEE: Non rentable")
+                    return
+                
+                amount = sol_balance
+                
+                if amount * price >= 7:
+                    if PAPER_MODE:
+                        self.balance['SOL'] = 0
+                        self.balance['USDT'] += amount * price * (1 - TRADING_FEE)
+                        print(f"VENTE simulee: {amount:.4f} SOL @ ${price}")
+                        self.position = None
+                        self.clear_entry_price()
+                    else:
+                        order = self.exchange.create_order(SYMBOL, 'market', 'sell', amount)
+                        print(f"VENTE reelle: {amount:.4f} SOL @ ${price}")
+                        self.position = None
+                        self.clear_entry_price()
+        except Exception as e:
+            print(f"Erreur vente: {e}")
+
+
+    def run(self):
+        print(f"\n===== BOT SOL/USDT - 3 MINUTES =====")
+        print(f"Paire: {SYMBOL}")
+        print(f"Timeframe: {TIMEFRAME}")
+        print(f"RSI achat: {RSI_BUY_THRESHOLD}")
+        print(f"Allocation: {MAX_USDT_PERCENT}%")
+        print(f"Seuil profit NET: {MIN_PROFIT_THRESHOLD}% (apres {TOTAL_FEES*100}% frais)")
+        print(f"Take-Profit: {TAKE_PROFIT_THRESHOLD}%")
+        print(f"Reserve: {MIN_USDT_RESERVE}$")
+        print(f"Seuil position minimum: {MIN_POSITION_THRESHOLD} SOL (dust ignore si <)")
+        if MANUAL_ENTRY_PRICE:
+            print(f"[CONFIG] ENTRY_PRICE defini: ${MANUAL_ENTRY_PRICE}")
+        print(f"====================================\n")
+        
+        while True:
+            try:
+                if not PAPER_MODE:
+                    self.balance = self.get_real_balance()
+                
+                data = self.get_data()
+                
+                if data is not None:
+                    price = self.get_price()
+                    
+                    if price is not None:
+                        print(f"\n{datetime.now().strftime('%H:%M:%S')} | Prix: ${price:,.2f}")
+                        print(f" USDT: {float(self.balance.get('USDT', 0)):.2f} | SOL: {float(self.balance.get('SOL', 0)):.4f}")
+                        
+                        sol_balance = float(self.balance.get('SOL', 0))
+                        
+                        if self.position is None:
+                            if self.should_buy(data):
+                                print(" -> Signal ACHAT!")
+                                self.buy()
+                        else:
+                            if sol_balance < MIN_POSITION_THRESHOLD:
+                                print(f" -> Dust ignore: {sol_balance:.6f} SOL")
+                                self.position = None
+                                self.clear_entry_price()
+                            else:
+                                if self.should_sell(data):
+                                    print(" -> Signal VENTE!")
+                                    self.sell()
+                        
+                        rsi = self.calculate_rsi(data)
+                        macd, signal = self.calculate_macd(data)
+                        print(f" RSI: {rsi:.1f} | MACD: {macd:.2f} (signal: {signal:.2f})")
+                
+                time.sleep(180)
+            except KeyboardInterrupt:
+                print("\nBot arrete!")
+                break
+            except Exception as e:
+                print(f"Erreur: {e}")
+                time.sleep(60)
+
+
+def run_web_server():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"Serveur web sur port {port}")
     server.serve_forever()
 
-if __name__ == "__main__":
-    threading.Thread(target=start_server, daemon=True).start()
-    run()
+
+if __name__ == '__main__':
+    import threading
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    bot = SimpleBot()
+    bot.run()
