@@ -1,5 +1,5 @@
 # CryptoBot - Spot Trading Bot SOL/USDT
-# Version avec persistance du prix d'achat
+# Version CORRIGEE - Ne jamais utiliser le prix actuel comme prix d'achat
 
 import os
 import sys
@@ -19,8 +19,13 @@ PAPER_MODE = False
 API_KEY = os.getenv('GATEIO_API_KEY', '')
 API_SECRET = os.getenv('GATEIO_API_SECRET', '')
 
-# Variable d'environnement pour prix d'achat manuel
+# Variable d'environnement pour prix d'achat manuel (PRIORITE ABSOLUE)
 MANUAL_ENTRY_PRICE = os.getenv('ENTRY_PRICE')
+if MANUAL_ENTRY_PRICE:
+    try:
+        MANUAL_ENTRY_PRICE = float(MANUAL_ENTRY_PRICE)
+    except:
+        MANUAL_ENTRY_PRICE = None
 
 # Frais Gate.io
 TRADING_FEE = 0.001
@@ -29,7 +34,7 @@ TOTAL_FEES = 0.002
 # Solde minimum à garder en USDT
 MIN_USDT_RESERVE = 5
 
-# Pourcentage du solde à utiliser (SOL est plus volatile, donc plus prudent)
+# Pourcentage du solde à utiliser
 MAX_USDT_PERCENT = 20
 
 # Seuil de profit minimum NET
@@ -38,7 +43,7 @@ MIN_PROFIT_THRESHOLD = 0.5
 # Take-Profit automatique
 TAKE_PROFIT_THRESHOLD = 1.5
 
-# Seuil RSI pour achat (SOL plus volatil, seuil plus bas)
+# Seuil RSI pour achat
 RSI_BUY_THRESHOLD = 30
 
 # Seuil minimum pour une vraie position
@@ -65,8 +70,13 @@ class SimpleHandler(BaseHTTPRequestHandler):
 class SimpleBot:
     
     def save_entry_price(self, entry_price, amount):
-        """Sauvegarde le prix d'achat dans un fichier"""
+        """Sauvegarde le prix d'achat UNIQUEMENT si c'est un vrai prix d'achat"""
         try:
+            current_price = self.get_price()
+            if current_price and entry_price < current_price * 1.01:
+                print(f"[DEBUG] Prix d'achat NON sauvegarde (trop proche du prix actuel: ${current_price:.2f})")
+                return
+            
             data = {
                 'entry_price': entry_price,
                 'amount': amount,
@@ -130,25 +140,26 @@ class SimpleBot:
         print(f"[DEBUG] Solde: USDT={self.balance.get('USDT', 0)}, SOL={self.balance.get('SOL', 0)}")
 
         sol_balance = float(self.balance.get('SOL', 0))
+        print(f"[DEBUG] MANUAL_ENTRY_PRICE = {MANUAL_ENTRY_PRICE}")
+        print(f"[DEBUG] sol_balance = {sol_balance}")
+        
         if sol_balance >= MIN_POSITION_THRESHOLD:
-            # ===== PRIORITE 1: Variable d'environnement ENTRY_PRICE =====
             if MANUAL_ENTRY_PRICE:
                 try:
                     entry_price = float(MANUAL_ENTRY_PRICE)
                     self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
                     print(f"[IMPORTANT] Position SOL (depuis ENV): {sol_balance} @ ${entry_price:.4f}")
+                    self.save_entry_price(entry_price, sol_balance)
                     return
                 except Exception as e:
                     print(f"[DEBUG] Erreur lecture ENTRY_PRICE: {e}")
             
-            # ===== PRIORITE 2: Fichier sauvegarde =====
             entry_price, saved_amount = self.load_entry_price()
             if entry_price and saved_amount > 0:
                 self.position = {'side': 'long', 'entry': entry_price, 'amount': sol_balance}
                 print(f"Position SOL (depuis fichier): {sol_balance} @ ${entry_price:.4f}")
                 return
             
-            # ===== PRIORITE 3: Historique des trades =====
             entry_price = self.get_entry_price_from_trades()
             if not entry_price:
                 entry_price = self.get_entry_price_from_orders()
@@ -159,14 +170,9 @@ class SimpleBot:
                 print(f"Position SOL (depuis trades): {sol_balance} @ ${entry_price:.4f}")
                 return
             
-            # ===== PRIORITE 4: Prix actuel (dernier recours) =====
-            current_price = self.get_price()
-            if current_price:
-                self.position = {'side': 'long', 'entry': current_price, 'amount': sol_balance}
-                self.save_entry_price(current_price, sol_balance)
-                print(f"[ATTENTION] Position SOL (prix actuel): {sol_balance} @ ${current_price:.4f}")
-            else:
-                self.position = None
+            print(f"[ERREUR] Impossible de trouver le prix d'achat reel!")
+            print(f"[ERREUR] Ajoute la variable ENTRY_PRICE sur Render avec le prix d'achat correct")
+            self.position = None
         else:
             print(f"Pas de position SOL")
             self.position = None
