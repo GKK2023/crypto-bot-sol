@@ -1,5 +1,5 @@
 # CryptoBot - Spot Trading Bot SOL/USDT
-# Version CORRIGEE - Ne jamais utiliser le prix actuel comme prix d'achat
+# Version CORRIGEE - RSI achat = 35
 
 import os
 import sys
@@ -19,7 +19,7 @@ PAPER_MODE = False
 API_KEY = os.getenv('GATEIO_API_KEY', '')
 API_SECRET = os.getenv('GATEIO_API_SECRET', '')
 
-# Variable d'environnement pour prix d'achat manuel (PRIORITE ABSOLUE)
+# Variable d'environnement pour prix d'achat manuel
 MANUAL_ENTRY_PRICE = os.getenv('ENTRY_PRICE')
 if MANUAL_ENTRY_PRICE:
     try:
@@ -43,8 +43,8 @@ MIN_PROFIT_THRESHOLD = 0.5
 # Take-Profit automatique
 TAKE_PROFIT_THRESHOLD = 1.5
 
-# Seuil RSI pour achat
-RSI_BUY_THRESHOLD = 30
+# Seuil RSI pour achat (MODIFIE: 30 -> 35)
+RSI_BUY_THRESHOLD = 35
 
 # Seuil minimum pour une vraie position
 MIN_POSITION_THRESHOLD = 0.001
@@ -70,7 +70,6 @@ class SimpleHandler(BaseHTTPRequestHandler):
 class SimpleBot:
     
     def save_entry_price(self, entry_price, amount):
-        """Sauvegarde le prix d'achat UNIQUEMENT si c'est un vrai prix d'achat"""
         try:
             current_price = self.get_price()
             if current_price and entry_price < current_price * 1.01:
@@ -89,7 +88,6 @@ class SimpleBot:
             print(f"[DEBUG] Erreur sauvegarde: {e}")
     
     def load_entry_price(self):
-        """Charge le prix d'achat depuis un fichier"""
         try:
             if os.path.exists(ENTRY_PRICE_FILE):
                 with open(ENTRY_PRICE_FILE, 'r') as f:
@@ -104,7 +102,6 @@ class SimpleBot:
         return None, 0
     
     def clear_entry_price(self):
-        """Efface le fichier du prix d'achat (après vente)"""
         try:
             if os.path.exists(ENTRY_PRICE_FILE):
                 os.remove(ENTRY_PRICE_FILE)
@@ -171,7 +168,6 @@ class SimpleBot:
                 return
             
             print(f"[ERREUR] Impossible de trouver le prix d'achat reel!")
-            print(f"[ERREUR] Ajoute la variable ENTRY_PRICE sur Render avec le prix d'achat correct")
             self.position = None
         else:
             print(f"Pas de position SOL")
